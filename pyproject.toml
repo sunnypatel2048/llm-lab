@@ -1,0 +1,27 @@
+[project]
+name = "llm-lab"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Sunny Patel", email = "sunnypatel2048@gmail.com" }
+]
+requires-python = ">=3.15"
+dependencies = [
+    "openai>=3.35.0",
+    "python-dotenv>=1.2.4",
+    "tenacity>=9.2.1",
+]
+
+[project.scripts]
+llm-lab = "llm_lab:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
