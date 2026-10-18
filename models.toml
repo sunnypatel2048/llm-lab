@@ -1,0 +1,48 @@
+# Model registry. Code refers to models by alias (e.g. "gemini-flash"), never by vendor ID,
+# so swapping a model version is a one-line change here.
+#
+# Prices are USD per 1M tokens at the provider's PAID rates, even on the free tier,
+# so cost_usd answers "what would this cost in production?".
+# rpm / rpd = requests per minute / per day. Omit them for no limit (local models).
+
+[providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key_env = "GEMINI_API_KEY"
+
+[providers.groq]
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+# No api_key_env: Ollama ignores the key.
+
+[models.gemini-flash]
+provider = "gemini"
+model_id = "gemini-3.8-flash"
+price_in_per_m = 0.75   # rises to 1.50 on 2027-01-01
+price_out_per_m = 3.75  # rises to 7.50 on 2027-01-01
+rpm = 5
+rpd = 20
+
+[models.gemini-lite]
+provider = "gemini"
+model_id = "gemini-3.5-flash-lite"
+price_in_per_m = 0.30
+price_out_per_m = 2.50
+rpm = 15
+rpd = 500
+
+[models.groq-oss]
+provider = "groq"
+model_id = "openai/gpt-oss-20b"
+price_in_per_m = 0.075
+price_out_per_m = 0.30
+rpm = 30
+rpd = 1000
+
+[models.local-qwen]
+provider = "ollama"
+model_id = "qwen3.5:4b"
+price_in_per_m = 0.0
+price_out_per_m = 0.0
