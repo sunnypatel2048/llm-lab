@@ -23,7 +23,3 @@ __all__ = [
     "ProviderUnavailable",
     "RateLimited",
 ]
-
-
-def main() -> None:
-    print("Hello from llm-lab!")

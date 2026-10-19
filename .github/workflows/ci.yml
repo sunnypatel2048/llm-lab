@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-uv no longer publishes floating major tags, so pin the exact release.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      # uv reads .python-version and installs that Python itself.
+      # --locked fails if uv.lock is out of date with pyproject.toml.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Format check
+        run: uv run ruff format --check
+
+      # Tests use fake transports: no API keys or network calls needed.
+      - name: Tests
+        run: uv run pytest -q

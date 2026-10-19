@@ -1,7 +1,7 @@
 [project]
 name = "llm-lab"
 version = "0.1.0"
-description = "Add your description here"
+description = "One client for Gemini, Groq and local Ollama models, with rate limits, caching, retries and cost tracking"
 readme = "README.md"
 authors = [
     { name = "Sunny Patel", email = "sunnypatel2048@gmail.com" }
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-llm-lab = "llm_lab:main"
+llm-lab = "llm_lab.smoke:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
