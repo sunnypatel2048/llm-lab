@@ -27,6 +27,9 @@ class LLMResponse:
     cost_usd: float | None  # at paid rates; None when token counts are missing
     cached: bool = False  # True = served from the local cache, no API call made
     attempts: int = 1  # 1 = succeeded first try; >1 = retries happened
+    # Why generation stopped: "stop" = finished; "length" = hit max_tokens (answer is cut off,
+    # common with thinking models whose reasoning uses up the budget); None = not reported.
+    finish_reason: str | None = None
 
 
 class LLMError(Exception):
@@ -47,6 +50,11 @@ class RateLimited(LLMError):
     """HTTP 429 from the provider. Waiting and retrying should succeed."""
 
     retryable = True
+
+    def __init__(self, message: str, *, retry_after: float | None = None):
+        super().__init__(message)
+        # Seconds the provider asked us to wait (Retry-After header), if it said.
+        self.retry_after = retry_after
 
 
 class ProviderError(LLMError):
