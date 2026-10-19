@@ -85,6 +85,15 @@ def registry():
                     "model_id": "qwen3.5:4b",
                     "price_in_per_m": 0.0,
                     "price_out_per_m": 0.0,
+                    "timeout_s": 300,
+                    "retry_on_timeout": False,
+                },
+                "local-nothink": {
+                    "provider": "ollama",
+                    "model_id": "qwen3.5:4b",
+                    "price_in_per_m": 0.0,
+                    "price_out_per_m": 0.0,
+                    "reasoning_effort": "none",
                 },
             },
         }
@@ -270,3 +279,45 @@ def test_daily_quota_stops_calls_with_the_real_limiter(tmp_path):
         client.chat("gemini-flash", MSGS)
     assert len(transport.calls) == 20
     assert clock.t == pytest.approx(15 * 12)  # 5 free, then 15 more at one per 12s
+
+
+# --- per-model timeouts, timeout retries, reasoning effort -----------------------------
+
+
+def test_model_timeout_is_used_when_the_call_sets_none():
+    client, transport, _ = make_client(OK)
+    client.chat("local", MSGS)
+    assert transport.calls[0]["timeout"] == 300
+
+
+def test_call_timeout_beats_model_timeout():
+    client, transport, _ = make_client(OK)
+    client.chat("local", MSGS, timeout=10)
+    assert transport.calls[0]["timeout"] == 10
+
+
+def test_client_default_timeout_when_model_sets_none():
+    client, transport, _ = make_client(OK, timeout=45)
+    client.chat("gemini-flash", MSGS)
+    assert transport.calls[0]["timeout"] == 45
+
+
+def test_local_timeout_is_not_retried():
+    # The bug this fixes: a slow local generation was retried 4 times, a minute each.
+    client, transport, sleep = make_client(LLMTimeout("no response within 300s"))
+    with pytest.raises(LLMTimeout):
+        client.chat("local", MSGS)
+    assert len(transport.calls) == 1 and sleep.waits == []
+
+
+def test_local_model_still_retries_other_transient_errors():
+    client, transport, _ = make_client(ProviderError("HTTP 503"), OK)
+    assert client.chat("local", MSGS).attempts == 2
+
+
+def test_reasoning_effort_gets_its_own_cache_entry(tmp_path):
+    # Same model ID, thinking on vs off: different answers, so they must not share a cache key.
+    client, transport, _ = make_client(OK, OK, cache=ResponseCache(tmp_path / "c.sqlite"))
+    client.chat("local", MSGS)
+    resp = client.chat("local-nothink", MSGS)
+    assert resp.cached is False and len(transport.calls) == 2

@@ -31,6 +31,11 @@ class ModelSpec:
     price_out_per_m: float
     rpm: int | None = None  # None = no per-minute limit
     rpd: int | None = None  # None = no per-day limit
+    timeout_s: float | None = None  # per-attempt timeout; None = the client's default
+    # Retry after a timeout? Yes for remote APIs (often a network blip); no for local models,
+    # where a slow generation will be just as slow the second time.
+    retry_on_timeout: bool = True
+    reasoning_effort: str | None = None  # sent to the provider only when set
 
     def api_key(self) -> str:
         if self.api_key_env is None:
@@ -97,8 +102,28 @@ class Registry:
 
             for name in ("rpm", "rpd"):
                 value = m.get(name)
-                if value is not None and (not isinstance(value, int) or value <= 0):
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                ):
                     raise ConfigError(f"Model '{alias}': {name} must be a positive integer")
+
+            timeout_s = m.get("timeout_s")
+            if timeout_s is not None and (
+                isinstance(timeout_s, bool)
+                or not isinstance(timeout_s, int | float)
+                or timeout_s <= 0
+            ):
+                raise ConfigError(f"Model '{alias}': timeout_s must be a number > 0")
+
+            retry_on_timeout = m.get("retry_on_timeout", True)
+            if not isinstance(retry_on_timeout, bool):
+                raise ConfigError(f"Model '{alias}': retry_on_timeout must be true or false")
+
+            reasoning_effort = m.get("reasoning_effort")
+            if reasoning_effort is not None and not (
+                isinstance(reasoning_effort, str) and reasoning_effort.strip()
+            ):
+                raise ConfigError(f"Model '{alias}': reasoning_effort must be a non-empty string")
 
             specs[alias] = ModelSpec(
                 alias=alias,
@@ -110,6 +135,9 @@ class Registry:
                 price_out_per_m=float(price_out),
                 rpm=m.get("rpm"),
                 rpd=m.get("rpd"),
+                timeout_s=float(timeout_s) if timeout_s is not None else None,
+                retry_on_timeout=retry_on_timeout,
+                reasoning_effort=reasoning_effort,
             )
         return cls(specs)
 

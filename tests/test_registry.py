@@ -29,7 +29,13 @@ def minimal(**model_overrides):
 
 def test_real_registry_loads_all_aliases():
     reg = Registry.load(ROOT / "models.toml")
-    assert reg.aliases() == ["gemini-flash", "gemini-lite", "groq-oss", "local-qwen"]
+    assert reg.aliases() == [
+        "gemini-flash",
+        "gemini-lite",
+        "groq-oss",
+        "local-qwen",
+        "local-qwen-nothink",
+    ]
 
 
 def test_real_registry_merges_provider_settings():
@@ -126,3 +132,52 @@ def test_check_keys_only_checks_requested_aliases(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     reg = Registry.load(ROOT / "models.toml")
     reg.check_keys(["local-qwen"])  # must not demand the Gemini key
+
+
+# --- per-model timeout, retry and reasoning settings ---------------------------------
+
+
+def test_new_settings_default_to_client_behaviour():
+    spec = Registry.from_dict(minimal()).get("m")
+    assert spec.timeout_s is None
+    assert spec.retry_on_timeout is True
+    assert spec.reasoning_effort is None
+
+
+def test_local_models_get_long_timeouts_and_no_timeout_retries():
+    reg = Registry.load(ROOT / "models.toml")
+    for alias in ("local-qwen", "local-qwen-nothink"):
+        spec = reg.get(alias)
+        assert spec.timeout_s and spec.timeout_s > 60
+        assert spec.retry_on_timeout is False
+    assert reg.get("local-qwen-nothink").reasoning_effort == "none"
+    assert reg.get("gemini-flash").retry_on_timeout is True
+
+
+def test_timeout_is_read_as_float():
+    spec = Registry.from_dict(minimal(timeout_s=90)).get("m")
+    assert spec.timeout_s == 90.0 and isinstance(spec.timeout_s, float)
+
+
+@pytest.mark.parametrize("bad", [0, -5, "60", True])
+def test_bad_timeout_rejected(bad):
+    with pytest.raises(ConfigError, match="timeout_s"):
+        Registry.from_dict(minimal(timeout_s=bad))
+
+
+@pytest.mark.parametrize("bad", ["false", 0, 1])
+def test_retry_on_timeout_must_be_a_boolean(bad):
+    with pytest.raises(ConfigError, match="retry_on_timeout"):
+        Registry.from_dict(minimal(retry_on_timeout=bad))
+
+
+@pytest.mark.parametrize("bad", ["", "  ", 3])
+def test_bad_reasoning_effort_rejected(bad):
+    with pytest.raises(ConfigError, match="reasoning_effort"):
+        Registry.from_dict(minimal(reasoning_effort=bad))
+
+
+def test_boolean_rate_limit_rejected():
+    # In Python True is an int; "rpm = true" in TOML must not mean 1 request per minute.
+    with pytest.raises(ConfigError, match="rpm"):
+        Registry.from_dict(minimal(rpm=True))

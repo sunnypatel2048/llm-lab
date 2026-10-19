@@ -26,7 +26,7 @@ from llm_lab.types import (
 REQUEST = httpx2.Request("POST", "https://example.test/v1/chat/completions")
 
 
-def spec(provider="gemini", alias="gemini-flash") -> ModelSpec:
+def spec(provider="gemini", alias="gemini-flash", reasoning_effort=None) -> ModelSpec:
     return ModelSpec(
         alias=alias,
         provider=provider,
@@ -35,6 +35,7 @@ def spec(provider="gemini", alias="gemini-flash") -> ModelSpec:
         api_key_env=None,
         price_in_per_m=0.0,
         price_out_per_m=0.0,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -51,6 +52,13 @@ def test_timeout_is_a_timeout_not_a_connection_error():
     # every timeout "unavailable" and never retried.
     err = translate_error(openai.APITimeoutError(request=REQUEST), spec())
     assert isinstance(err, LLMTimeout) and err.retryable
+
+
+def test_local_timeout_message_says_how_long_and_what_to_change():
+    err = translate_error(
+        openai.APITimeoutError(request=REQUEST), spec(provider="ollama"), timeout=60
+    )
+    assert "within 60s" in str(err) and "timeout_s" in str(err)
 
 
 def test_connection_error_to_ollama_suggests_starting_it():
@@ -168,3 +176,18 @@ def test_transport_translates_sdk_errors():
     with pytest.raises(RateLimited) as excinfo:
         transport(spec(), [], temperature=0.0, max_tokens=8, timeout=1)
     assert isinstance(excinfo.value.__cause__, openai.RateLimitError)  # original kept for debugging
+
+
+def test_reasoning_effort_is_sent_only_when_configured():
+    sent = []
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        return completion()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    transport = OpenAICompatTransport(client_factory=lambda s: client)
+    transport(spec(), [], temperature=0.0, max_tokens=8, timeout=1)
+    transport(spec(reasoning_effort="none"), [], temperature=0.0, max_tokens=8, timeout=1)
+    assert "reasoning_effort" not in sent[0]
+    assert sent[1]["reasoning_effort"] == "none"

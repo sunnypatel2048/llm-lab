@@ -88,18 +88,21 @@ class OpenAICompatTransport:
         timeout: float,
     ) -> RawCompletion:
         client = self._client_for(spec)
+        params: dict[str, Any] = dict(
+            model=spec.model_id,
+            messages=messages,
+            temperature=temperature,
+            # max_tokens rather than the newer max_completion_tokens: it's the one all
+            # three compatible APIs (Gemini, Groq, Ollama) accept.
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        if spec.reasoning_effort is not None:
+            params["reasoning_effort"] = spec.reasoning_effort
         try:
-            completion = client.chat.completions.create(
-                model=spec.model_id,
-                messages=messages,
-                temperature=temperature,
-                # max_tokens rather than the newer max_completion_tokens: it's the one all
-                # three compatible APIs (Gemini, Groq, Ollama) accept.
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
+            completion = client.chat.completions.create(**params)
         except openai.OpenAIError as e:
-            raise translate_error(e, spec) from e
+            raise translate_error(e, spec, timeout=timeout) from e
         return parse_completion(completion)
 
 
@@ -117,12 +120,21 @@ def parse_completion(completion: Any) -> RawCompletion:
     )
 
 
-def translate_error(e: openai.OpenAIError, spec: ModelSpec) -> LLMError:
+def translate_error(
+    e: openai.OpenAIError, spec: ModelSpec, *, timeout: float | None = None
+) -> LLMError:
     """Map an SDK exception to an llm_lab error. ORDER MATTERS: APITimeoutError is a subclass
     of APIConnectionError, so it must be checked first or every timeout would be reported as
     "can't connect" and never retried."""
     if isinstance(e, openai.APITimeoutError):
-        return LLMTimeout(f"{spec.alias}: request timed out")
+        waited = f" within {timeout:g}s" if timeout is not None else ""
+        hint = (
+            " Local models can be slow, especially while thinking: raise timeout_s for this"
+            " model in models.toml, or lower max_tokens."
+            if spec.provider == "ollama"
+            else ""
+        )
+        return LLMTimeout(f"{spec.alias}: no response{waited}.{hint}")
 
     if isinstance(e, openai.APIConnectionError):
         hint = (

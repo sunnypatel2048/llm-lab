@@ -4,6 +4,12 @@
 # Prices are USD per 1M tokens at the provider's PAID rates, even on the free tier,
 # so cost_usd answers "what would this cost in production?".
 # rpm / rpd = requests per minute / per day. Omit them for no limit (local models).
+# Optional per model:
+#   timeout_s        seconds per attempt (default 60, set in the client)
+#   retry_on_timeout retry after a timeout? default true; false for local models, where a slow
+#                    generation is just as slow the second time
+#   reasoning_effort sent to the provider as-is when set (e.g. "none" turns thinking off on
+#                    Ollama for models that only support on/off)
 
 [providers.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -46,3 +52,15 @@ provider = "ollama"
 model_id = "qwen3.5:4b"
 price_in_per_m = 0.0
 price_out_per_m = 0.0
+timeout_s = 300         # thinking on a laptop: a long answer can take minutes
+retry_on_timeout = false
+
+# Same model with thinking turned off: compare speed and quality against local-qwen.
+[models.local-qwen-nothink]
+provider = "ollama"
+model_id = "qwen3.5:4b"
+price_in_per_m = 0.0
+price_out_per_m = 0.0
+timeout_s = 120
+retry_on_timeout = false
+reasoning_effort = "none"

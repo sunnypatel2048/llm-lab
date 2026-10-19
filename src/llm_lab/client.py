@@ -31,14 +31,20 @@ from tenacity import (
 
 from llm_lab.cache import CACHE_MODES, CacheMode, ResponseCache, cache_key
 from llm_lab.ratelimit import RateLimiter
-from llm_lab.registry import Registry
-from llm_lab.types import LLMError, LLMResponse, Message
+from llm_lab.registry import ModelSpec, Registry
+from llm_lab.types import LLMError, LLMResponse, LLMTimeout, Message
 
 log = logging.getLogger(__name__)
 
 
-def _is_retryable(e: BaseException) -> bool:
-    return isinstance(e, LLMError) and e.retryable
+def _should_retry(spec: ModelSpec) -> Callable[[BaseException], bool]:
+    def predicate(e: BaseException) -> bool:
+        if not (isinstance(e, LLMError) and e.retryable):
+            return False
+        # A timeout on a local model isn't transient: the same generation will be just as slow.
+        return spec.retry_on_timeout or not isinstance(e, LLMTimeout)
+
+    return predicate
 
 
 class LLMClient:
@@ -57,7 +63,8 @@ class LLMClient:
         """Low-level constructor. limiter=None / cache=None mean "disabled", which tests use;
         normal code should call LLMClient.from_env(), which turns both on.
 
-        timeout: seconds per attempt. Local thinking models can be slow on a laptop.
+        timeout: default seconds per attempt, used when neither the call nor the model's
+            timeout_s in models.toml sets one.
         max_wait: cap on any single backoff wait, including a provider's Retry-After.
         """
         if transport is None:
@@ -105,18 +112,29 @@ class LLMClient:
 
         key = None
         if self._cache is not None:
-            key = cache_key(spec, messages, temperature=temperature, max_tokens=max_tokens)
+            # reasoning_effort changes the answer, so it's part of the key. Only added when set,
+            # so models without it keep the same keys as before.
+            extra = {"reasoning_effort": spec.reasoning_effort} if spec.reasoning_effort else None
+            key = cache_key(
+                spec, messages, temperature=temperature, max_tokens=max_tokens, extra=extra
+            )
             hit = self._cache.get(key, cache)
             if hit is not None:
                 log.info("%s cache hit", alias)
                 return hit
 
-        call_timeout = timeout if timeout is not None else self.timeout
+        # Most specific wins: this call, then the model's timeout_s, then the client default.
+        if timeout is not None:
+            call_timeout = timeout
+        elif spec.timeout_s is not None:
+            call_timeout = spec.timeout_s
+        else:
+            call_timeout = self.timeout
         throttled_s = 0.0
         retrying = Retrying(
             stop=stop_after_attempt(self.max_attempts),
             wait=self._wait,
-            retry=retry_if_exception(_is_retryable),
+            retry=retry_if_exception(_should_retry(spec)),
             sleep=self._sleep,
             before_sleep=self._log_retry,
             reraise=True,  # surface our own error type, not tenacity's RetryError
