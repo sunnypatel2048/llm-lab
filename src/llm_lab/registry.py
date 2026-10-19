@@ -36,6 +36,9 @@ class ModelSpec:
     # where a slow generation will be just as slow the second time.
     retry_on_timeout: bool = True
     reasoning_effort: str | None = None  # sent to the provider only when set
+    # Total tries per call (1 = never retry); None = the client's default. Every retry is a real
+    # request, so a model with a tiny daily quota should get fewer.
+    max_attempts: int | None = None
 
     def api_key(self) -> str:
         if self.api_key_env is None:
@@ -119,6 +122,14 @@ class Registry:
             if not isinstance(retry_on_timeout, bool):
                 raise ConfigError(f"Model '{alias}': retry_on_timeout must be true or false")
 
+            max_attempts = m.get("max_attempts")
+            if max_attempts is not None and (
+                isinstance(max_attempts, bool)
+                or not isinstance(max_attempts, int)
+                or max_attempts < 1
+            ):
+                raise ConfigError(f"Model '{alias}': max_attempts must be an integer >= 1")
+
             reasoning_effort = m.get("reasoning_effort")
             if reasoning_effort is not None and not (
                 isinstance(reasoning_effort, str) and reasoning_effort.strip()
@@ -138,6 +149,7 @@ class Registry:
                 timeout_s=float(timeout_s) if timeout_s is not None else None,
                 retry_on_timeout=retry_on_timeout,
                 reasoning_effort=reasoning_effort,
+                max_attempts=max_attempts,
             )
         return cls(specs)
 

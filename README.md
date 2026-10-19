@@ -43,7 +43,7 @@ Defined in [`models.toml`](models.toml). Code refers to models by alias, so chan
 
 Prices are the providers' paid rates even though I run on free tiers, so reported cost answers "what would this cost in production?". Limits are my free-tier quotas.
 
-Optional per-model settings: `timeout_s` (seconds per attempt), `retry_on_timeout`, and `reasoning_effort` (passed to the provider as-is; `"none"` turns thinking off on Ollama).
+Optional per-model settings: `timeout_s` (seconds per attempt), `retry_on_timeout`, `reasoning_effort` (passed to the provider as-is; `"none"` turns thinking off on Ollama), and `max_attempts` (total tries per call; `gemini-flash` gets 2 instead of the default 4).
 
 ## Design decisions
 
@@ -53,7 +53,7 @@ Optional per-model settings: `timeout_s` (seconds per attempt), `retry_on_timeou
 
 **Cache every answer.** Responses are stored in SQLite, keyed by a SHA-256 hash of provider, model ID, messages, temperature and max tokens. Re-running an eval or a demo costs no quota. Errors and empty answers are never cached, so a blocked or truncated response can't hide on later runs. A side effect: a repeated prompt is answered from the cache even when the provider is down.
 
-**Retry only what can succeed.** Rate limits (429), server errors (5xx) and timeouts are retried up to 4 times with exponential backoff and jitter, waiting at least as long as the provider's `Retry-After`. Bad requests, missing keys, an unreachable Ollama and exhausted daily quotas fail immediately with a one-line message. Local models don't retry timeouts at all: a remote timeout is often a network blip, but a slow local generation will be just as slow the second time, so they get a long `timeout_s` instead. The SDK's own retries are turned off so attempts aren't silently multiplied underneath mine.
+**Retry only what can succeed.** Rate limits (429), server errors (5xx) and timeouts are retried with exponential backoff and jitter, waiting at least as long as the provider's `Retry-After`. Calls get 4 attempts by default, but every retry is a real request against the daily quota, so `gemini-flash` (20 a day) gets 2. Bad requests, missing keys, an unreachable Ollama and exhausted daily quotas fail immediately with a one-line message. Local models don't retry timeouts at all: a remote timeout is often a network blip, but a slow local generation will be just as slow the second time, so they get a long `timeout_s` instead. The SDK's own retries are turned off so attempts aren't silently multiplied underneath mine.
 
 **Report unknowns, don't guess.** If a provider doesn't return token counts, tokens and cost are `None`, never estimated. Every response records `finish_reason`, which is how truncated answers get caught (see results).
 
@@ -84,7 +84,7 @@ To see how long `local-qwen` needs to finish with thinking on, I ran it directly
 - **Thinking dominates local cost.** The same model gave a two-sentence answer in 69 tokens and 3.6 s with thinking off. With thinking on, it needed about 3,500 tokens and 2 min 41 s: roughly 50 times the tokens and 44 times the time. Capped at `max_tokens=2048`, it ran for 96 s and returned nothing (`finish_reason="length"`), because the cap covers the hidden reasoning as well as the answer. Earlier, a five-word answer needed 2048 tokens; at 512 and 1024 it also came back empty.
 - **A timeout that's harmless for an API was the wrong thing to retry locally.** With the original 60 s timeout, `local-qwen` never finished, and each retry restarted the same 2.5-minute generation from scratch. Ollama logged a `500` for every attempt, but that was only my client hanging up. The fix was a per-model `timeout_s`, no timeout retries for local models, and the `local-qwen-nothink` alias to measure what thinking costs.
 - **"Thinking tokens" is only as good as what the provider reports.** Groq reports them (109 of 172 output tokens were reasoning). Ollama doesn't, through the OpenAI-compatible API, so a blank in that column doesn't mean no thinking: all 2,048 of `local-qwen`'s output tokens were reasoning. `gemini-lite` reported none either, which could mean it didn't think or that the count isn't exposed.
-- **Free tiers are noisy.** Groq answered in 0.6 s, the local model in 3.6 s, and `gemini-lite` took 10.8 s for 55 tokens, while `gemini-flash` returned 503 "high demand" on all 4 attempts in both of that day's runs. Every retry is a real request, so those failures used 8 of its 20 daily requests without producing an answer. That makes me reconsider how many retries a model with a tiny daily quota should get.
+- **Free tiers are noisy.** Groq answered in 0.6 s, the local model in 3.6 s, and `gemini-lite` took 10.8 s for 55 tokens, while `gemini-flash` returned 503 "high demand" on all 4 attempts in both of that day's runs. Every retry is a real request, so those failures used 8 of its 20 daily requests without producing an answer. So I made the number of attempts a per-model setting and gave `gemini-flash` 2: one retry still rides out a brief blip, but a sustained outage now costs 2 requests instead of 4.
 
 ## Testing
 

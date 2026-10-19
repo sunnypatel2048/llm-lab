@@ -80,6 +80,13 @@ def registry():
                     "rpm": 5,
                     "rpd": 20,
                 },
+                "gemini-scarce": {
+                    "provider": "gemini",
+                    "model_id": "gemini-3.8-flash",
+                    "price_in_per_m": 0.75,
+                    "price_out_per_m": 3.75,
+                    "max_attempts": 2,
+                },
                 "local": {
                     "provider": "ollama",
                     "model_id": "qwen3.5:4b",
@@ -321,3 +328,31 @@ def test_reasoning_effort_gets_its_own_cache_entry(tmp_path):
     client.chat("local", MSGS)
     resp = client.chat("local-nothink", MSGS)
     assert resp.cached is False and len(transport.calls) == 2
+
+
+# --- per-model attempt limits ---------------------------------------------------------
+
+
+def test_model_max_attempts_caps_retries():
+    # The case that prompted this: 503 "high demand" on every try used 4 of 20 daily requests.
+    limiter = CountingLimiter()
+    client, transport, sleep = make_client(
+        *[ProviderError("HTTP 503: high demand")] * 4, limiter=limiter
+    )
+    with pytest.raises(ProviderError):
+        client.chat("gemini-scarce", MSGS)
+    assert len(transport.calls) == 2
+    assert limiter.acquired == 2  # only 2 requests counted against the quota
+    assert len(sleep.waits) == 1
+
+
+def test_model_max_attempts_still_allows_one_retry_to_succeed():
+    client, _, _ = make_client(ProviderError("HTTP 503"), OK)
+    assert client.chat("gemini-scarce", MSGS).attempts == 2
+
+
+def test_models_without_a_setting_use_the_client_default():
+    client, transport, _ = make_client(*[ProviderError("HTTP 503")] * 5, max_attempts=3)
+    with pytest.raises(ProviderError):
+        client.chat("gemini-flash", MSGS)
+    assert len(transport.calls) == 3

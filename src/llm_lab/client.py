@@ -65,6 +65,7 @@ class LLMClient:
 
         timeout: default seconds per attempt, used when neither the call nor the model's
             timeout_s in models.toml sets one.
+        max_attempts: default total tries per call; a model's max_attempts overrides it.
         max_wait: cap on any single backoff wait, including a provider's Retry-After.
         """
         if transport is None:
@@ -131,8 +132,9 @@ class LLMClient:
         else:
             call_timeout = self.timeout
         throttled_s = 0.0
+        max_attempts = spec.max_attempts if spec.max_attempts is not None else self.max_attempts
         retrying = Retrying(
-            stop=stop_after_attempt(self.max_attempts),
+            stop=stop_after_attempt(max_attempts),
             wait=self._wait,
             retry=retry_if_exception(_should_retry(spec)),
             sleep=self._sleep,

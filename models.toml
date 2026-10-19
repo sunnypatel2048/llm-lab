@@ -10,6 +10,8 @@
 #                    generation is just as slow the second time
 #   reasoning_effort sent to the provider as-is when set (e.g. "none" turns thinking off on
 #                    Ollama for models that only support on/off)
+#   max_attempts     total tries per call, retries included (default 4, set in the client).
+#                    Every retry is a real request against the daily quota.
 
 [providers.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -30,6 +32,8 @@ price_in_per_m = 0.75   # rises to 1.50 on 2027-01-01
 price_out_per_m = 3.75  # rises to 7.50 on 2027-01-01
 rpm = 5
 rpd = 20
+# Only 20 requests a day: a 503 "high demand" retried 4 times burned 4 of them for nothing.
+max_attempts = 2
 
 [models.gemini-lite]
 provider = "gemini"

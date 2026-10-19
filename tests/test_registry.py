@@ -181,3 +181,23 @@ def test_boolean_rate_limit_rejected():
     # In Python True is an int; "rpm = true" in TOML must not mean 1 request per minute.
     with pytest.raises(ConfigError, match="rpm"):
         Registry.from_dict(minimal(rpm=True))
+
+
+def test_max_attempts_defaults_to_the_client_setting():
+    assert Registry.from_dict(minimal()).get("m").max_attempts is None
+
+
+def test_scarce_quota_model_gets_fewer_attempts():
+    reg = Registry.load(ROOT / "models.toml")
+    assert reg.get("gemini-flash").max_attempts == 2
+    assert reg.get("gemini-lite").max_attempts is None  # 500/day: the default 4 is fine
+
+
+def test_max_attempts_of_one_means_never_retry():
+    assert Registry.from_dict(minimal(max_attempts=1)).get("m").max_attempts == 1
+
+
+@pytest.mark.parametrize("bad", [0, -1, 2.5, "2", True])
+def test_bad_max_attempts_rejected(bad):
+    with pytest.raises(ConfigError, match="max_attempts"):
+        Registry.from_dict(minimal(max_attempts=bad))
