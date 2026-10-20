@@ -1,0 +1,18 @@
+{
+  "_note": "Synthetic demo data for the agent. Not real people.",
+  "customers": [
+    {"customer_id": "C-101", "name": "Jane Doe", "email": "jane@example.com", "loyalty_discount_pct": 10},
+    {"customer_id": "C-102", "name": "Raj Mehta", "email": "raj@example.com", "loyalty_discount_pct": 0},
+    {"customer_id": "C-103", "name": "Ana Lopez", "email": "ana@example.com", "loyalty_discount_pct": 5}
+  ],
+  "orders": [
+    {"order_id": "O-5001", "customer_id": "C-101", "status": "delivered", "total_usd": 129.99, "placed_on": "2026-08-02"},
+    {"order_id": "O-5002", "customer_id": "C-101", "status": "delivered", "total_usd": 45.50, "placed_on": "2026-08-19"},
+    {"order_id": "O-5003", "customer_id": "C-101", "status": "shipped", "total_usd": 89.00, "placed_on": "2026-10-14"},
+    {"order_id": "O-5004", "customer_id": "C-101", "status": "cancelled", "total_usd": 250.00, "placed_on": "2026-09-03"},
+    {"order_id": "O-5005", "customer_id": "C-102", "status": "delivered", "total_usd": 300.00, "placed_on": "2026-09-11"},
+    {"order_id": "O-5006", "customer_id": "C-101", "status": "delivered", "total_usd": 12.75, "placed_on": "2026-09-27"},
+    {"order_id": "O-5007", "customer_id": "C-103", "status": "delivered", "total_usd": 60.00, "placed_on": "2026-10-01"},
+    {"order_id": "O-5008", "customer_id": "C-101", "status": "placed", "total_usd": 33.20, "placed_on": "2026-10-19"}
+  ]
+}
