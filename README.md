@@ -69,8 +69,8 @@ uv run llm-lab "Explain BM25 in two sentences" --cache refresh
 
 | Model | Status | Latency | Tokens in / out | Thinking tokens | Cost per call | Finish |
 |---|---|---|---|---|---|---|
-| `gemini-flash` | _pending: 503 "high demand" on every attempt; rerun later_ | | | | | |
-| `gemini-lite` | ok | 10,811 ms | 8 / 55 | not reported | $0.000140 | stop |
+| `gemini-flash` | ok | 23,989 ms | 8 / 70 | not reported | $0.000269 | stop |
+| `gemini-lite` | ok | 759 ms | 8 / 55 | not reported | $0.000140 | stop |
 | `groq-oss` | ok | 557 ms | 77 / 172 | 109 | $0.000057 | stop |
 | `local-qwen` | empty | 96,047 ms | 18 / 2,048 | not reported | $0 | length |
 | `local-qwen-nothink` | ok | 3,641 ms | 20 / 69 | thinking off | $0 | stop |
