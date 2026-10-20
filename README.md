@@ -2,7 +2,7 @@
 
 One Python client for three model providers: Google Gemini, Groq and a local Ollama model. Every call goes through the same `chat()` method and returns the same response shape, with per-model rate limiting, a response cache, retries with backoff, and cost tracking at paid rates.
 
-It's the shared foundation for the rest of my AI engineering work: an agent loop, a RAG system with an eval harness, and a local-model benchmark all build on this client instead of calling SDKs directly.
+It's the shared foundation for the rest of my AI engineering work. A tool-calling agent built on it is included below, and the RAG system and local-model benchmark I'm building next will use it too, instead of calling SDKs directly.
 
 ## Quick start
 
@@ -84,7 +84,56 @@ To see how long `local-qwen` needs to finish with thinking on, I ran it directly
 - **Thinking dominates local cost.** The same model gave a two-sentence answer in 69 tokens and 3.6 s with thinking off. With thinking on, it needed about 3,500 tokens and 2 min 41 s: roughly 50 times the tokens and 44 times the time. Capped at `max_tokens=2048`, it ran for 96 s and returned nothing (`finish_reason="length"`), because the cap covers the hidden reasoning as well as the answer. Earlier, a five-word answer needed 2048 tokens; at 512 and 1024 it also came back empty.
 - **A timeout that's harmless for an API was the wrong thing to retry locally.** With the original 60 s timeout, `local-qwen` never finished, and each retry restarted the same 2.5-minute generation from scratch. Ollama logged a `500` for every attempt, but that was only my client hanging up. The fix was a per-model `timeout_s`, no timeout retries for local models, and the `local-qwen-nothink` alias to measure what thinking costs.
 - **"Thinking tokens" is only as good as what the provider reports.** Groq reports them (109 of 172 output tokens were reasoning). Ollama doesn't, through the OpenAI-compatible API, so a blank in that column doesn't mean no thinking: all 2,048 of `local-qwen`'s output tokens were reasoning. `gemini-lite` reported none either, which could mean it didn't think or that the count isn't exposed.
-- **Free tiers are noisy.** Groq answered in 0.6 s, the local model in 3.6 s, and `gemini-lite` took 10.8 s for 55 tokens, while `gemini-flash` returned 503 "high demand" on all 4 attempts in both of that day's runs. Every retry is a real request, so those failures used 8 of its 20 daily requests without producing an answer. So I made the number of attempts a per-model setting and gave `gemini-flash` 2: one retry still rides out a brief blip, but a sustained outage now costs 2 requests instead of 4.
+- **Free tiers are noisy.** On my first run, `gemini-lite` took 10.8 s for 55 tokens (759 ms on the rerun in the table), while `gemini-flash` returned 503 "high demand" on all 4 attempts in both of that day's runs; when it did answer later, it took 24 s. Every retry is a real request, so those failures used 8 of its 20 daily requests without producing an answer. So I made the number of attempts a per-model setting and gave `gemini-flash` 2: one retry still rides out a brief blip, but a sustained outage now costs 2 requests instead of 4.
+
+## Agent: a tool-calling loop
+
+A small agent written without a framework, on top of the client: [`agent.py`](src/llm_lab/agent.py) is about 150 lines. It answers questions about a synthetic shop ([`data/shop.json`](src/llm_lab/data/shop.json)) using three tools:
+
+| Tool | Does |
+|---|---|
+| `find_customer(email)` | customer ID, name and loyalty discount |
+| `list_orders(customer_id, status?)` | a customer's orders and totals, optionally filtered by status |
+| `calculate(expression)` | exact arithmetic |
+
+```bash
+uv run llm-lab-agent --model groq-oss --expect 169.42
+```
+
+The demo question, "How much has jane@example.com spent on delivered orders, after her loyalty discount?", takes three dependent tool calls: the customer ID and discount from the first feed the second and third. There's one right answer ($169.42), so `--expect` turns a run into a pass/fail check.
+
+**How it works.** Each step is one model call with the conversation and the tool definitions. If the model asks for tools, all of them run, each result goes back as a `tool` message linked to its call ID, and the loop calls again. If the model answers instead, that's the result.
+
+**Guards, and why each exists:**
+
+- **Mistakes go back to the model, once.** Arguments that aren't valid JSON or break the tool's schema, and calls to a tool that doesn't exist, are returned to the model as an error it can fix. A second mistake on the same tool before it has succeeded stops the run. A tool failing on valid input ("no customer with that email") is the data answering, not a mistake, so it doesn't count.
+- **A step limit** (6 by default) stops a model that never answers.
+- **Stopping early keeps the evidence.** Every early stop reports why, with the trace and the cost so far.
+- **No `eval()`.** `calculate` parses the expression and evaluates only numbers, `+ - * /` and parentheses, so model output can't run code. Exponentiation is excluded because `9 ** 9 ** 9` hangs the process.
+- **Schemas are checked, not trusted.** A small validator ([`schema.py`](src/llm_lab/schema.py)) reports every problem with a call at once, since the model gets one chance to fix it. A tool whose schema uses a rule the validator can't enforce fails at startup instead of silently passing bad input.
+- **Provider data survives the round trip.** The assistant turn sent back on the next call keeps everything the provider attached to each tool call (Gemini needs its reasoning data back), but only standard fields on the message itself, because some providers reject fields they don't recognise.
+
+### Results
+
+```bash
+uv run llm-lab-agent --model <alias> --cache off --expect 169.42
+```
+
+| Model | Correct | Steps | Tool calls | Repairs | Tokens in / out | Cost | Time |
+|---|---|---|---|---|---|---|---|
+| `groq-oss` | yes | 4 | 3 | 0 | 2,169 / 434 | $0.000293 | 1.7 s |
+| `gemini-lite` | yes | 5 | 4 | 0 | 2,982 / 131 | $0.001222 | 3.4 s |
+| `local-qwen-nothink` | yes | 4 | 3 | 0 | 3,138 / 144 | $0 | 15.1 s |
+
+One run each, so these are a snapshot.
+
+**What I learned**
+
+- **Agent cost is mostly input, and it grows with every step.** Each call resends the whole conversation plus the tool definitions (300+ tokens on their own). `gemini-lite`'s input went 373, 437, 646, 724, 802 tokens across its five steps, so input was 23 times its output. Fewer steps and shorter tool results matter more than shorter answers.
+- **The model with the fewest tokens cost the most.** `gemini-lite` produced the least output but cost about 4 times what `groq-oss` did: its input price is 4 times higher, and it split the arithmetic into two `calculate` calls, adding a step that resent everything.
+- **Reasoning models spend output on small decisions.** `groq-oss` was fastest and cheapest, but used 177 output tokens to decide on one `calculate` call, and it worked out `1 - 10/100 = 0.9` itself instead of passing it to the calculator, despite being told to use the tool for all arithmetic. Harmless here; a reason to check tool use, not just final answers.
+- **Locally, reading the prompt is the slow part.** The local model's first step took 7.5 s, the later ones 1.5 to 3.7 s. At the roughly 96 tokens/s prompt-processing rate I measured earlier, its 593-token first prompt accounts for about 6 s. The later steps were most likely faster because Ollama reuses work for the shared start of the conversation.
+- **"Tokens" aren't comparable across providers.** The same first prompt counted as 373 (Gemini), 399 (Groq) and 593 (Qwen) tokens: each has its own tokenizer and its own way of turning tool definitions into prompt text.
 
 ## Testing
 
@@ -107,6 +156,11 @@ src/llm_lab/
   registry.py             loads and validates models.toml
   types.py                LLMResponse and error types
   smoke.py                the `llm-lab` command
+  agent.py                the tool-calling loop
+  tools.py                tools, the Toolbox that runs them, the safe calculator
+  schema.py               JSON Schema validation for tool arguments
+  agent_cli.py            the `llm-lab-agent` command
+  data/shop.json          synthetic data for the agent
 tests/                    one test file per module
 ```
 
@@ -114,4 +168,5 @@ tests/                    one test file per module
 
 - Rate limits and quota counts are per process. Several processes or machines sharing one quota would need a shared store such as Redis with an atomic Lua script.
 - No streaming, so time-to-first-token isn't measured yet.
-- Tool calling isn't wired through yet; that comes with the agent loop.
+- The agent runs tools one after another; tools a model requests together could run in parallel.
+- The schema validator covers only the keywords these tools use; anything else is rejected at startup rather than ignored.
