@@ -9,6 +9,7 @@ from llm_lab.types import (
     ProviderError,
     ProviderUnavailable,
     RateLimited,
+    ToolCall,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ProviderError",
     "ProviderUnavailable",
     "RateLimited",
+    "ToolCall",
 ]

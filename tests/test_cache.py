@@ -7,7 +7,7 @@ import pytest
 
 from llm_lab.cache import ResponseCache, cache_key
 from llm_lab.registry import ModelSpec
-from llm_lab.types import LLMResponse
+from llm_lab.types import LLMResponse, ToolCall
 
 MSGS = [{"role": "user", "content": "Explain BM25 in two sentences."}]
 
@@ -165,3 +165,26 @@ def test_concurrent_writes_all_land(cache):
         t.join()
     assert len(cache) == 20
     assert all(cache.get(k).text == k for k in keys)
+
+
+def test_tool_call_turn_round_trips(cache):
+    call = ToolCall(id="call_1", name="find_customer", arguments='{"email": "a@b.c"}')
+    message = {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]}
+    assert cache.put(key(), response(text="", tool_calls=(call,), message=message))
+    hit = cache.get(key())
+    assert hit.tool_calls == (call,) and hit.message == message
+
+
+def test_entries_written_before_tool_support_still_load(cache):
+    old = {
+        k: v
+        for k, v in dataclasses.asdict(response()).items()
+        if k not in ("tool_calls", "message")
+    }
+    with sqlite3.connect(cache.path) as conn:
+        conn.execute(
+            "INSERT INTO responses VALUES (?, ?, ?, ?, ?)",
+            (key(), "gemini-flash", "gemini-3.8-flash", "2026-10-18", json.dumps(old)),
+        )
+    hit = cache.get(key())
+    assert hit is not None and hit.tool_calls == () and hit.message is None

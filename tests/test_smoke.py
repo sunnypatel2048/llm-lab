@@ -13,7 +13,7 @@ class ScriptedTransport:
         self.by_alias = by_alias
         self.calls = 0
 
-    def __call__(self, spec, messages, *, temperature, max_tokens, timeout):
+    def __call__(self, spec, messages, *, temperature, max_tokens, timeout, tools=None):
         self.calls += 1
         item = self.by_alias[spec.alias]
         if isinstance(item, Exception):

@@ -1,6 +1,7 @@
 """Transport tests against the real `openai` SDK classes (no network: clients and errors are
 constructed locally, and the HTTP call is replaced by a fake)."""
 
+import json
 from types import SimpleNamespace
 
 import httpx2
@@ -191,3 +192,69 @@ def test_reasoning_effort_is_sent_only_when_configured():
     transport(spec(reasoning_effort="none"), [], temperature=0.0, max_tokens=8, timeout=1)
     assert "reasoning_effort" not in sent[0]
     assert sent[1]["reasoning_effort"] == "none"
+
+
+# --- tool calls -----------------------------------------------------------------------
+
+
+def tool_completion(calls, content=None, extra_message_fields=None):
+    message = SimpleNamespace(content=content, tool_calls=calls, **(extra_message_fields or {}))
+    choice = SimpleNamespace(message=message, finish_reason="tool_calls")
+    usage = SimpleNamespace(prompt_tokens=50, completion_tokens=10, completion_tokens_details=None)
+    return SimpleNamespace(choices=[choice], usage=usage)
+
+
+def sdk_call(id="call_1", name="find_customer", arguments='{"email": "a@b.c"}', **extra):
+    function = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(id=id, type="function", function=function, **extra)
+
+
+def test_parse_reads_tool_calls():
+    raw = parse_completion(tool_completion([sdk_call(), sdk_call(id="call_2", name="calculate")]))
+    assert [(c.id, c.name) for c in raw.tool_calls] == [
+        ("call_1", "find_customer"),
+        ("call_2", "calculate"),
+    ]
+    assert raw.tool_calls[0].arguments == '{"email": "a@b.c"}'
+    assert raw.text == ""
+
+
+def test_echo_message_keeps_provider_data_on_tool_calls_but_not_on_the_message():
+    # Gemini puts continuity data on each tool call; Groq adds a "reasoning" field to the message
+    # that requests may not echo back. Keep the first, drop the second.
+    signature = {"google": {"thought_signature": "abc"}}
+    completion = tool_completion(
+        [sdk_call(extra_content=signature)], extra_message_fields={"reasoning": "thinking..."}
+    )
+    message = parse_completion(completion).message
+    assert set(message) == {"role", "content", "tool_calls"}
+    assert message["tool_calls"][0]["extra_content"] == signature
+
+
+def test_object_arguments_become_json_text_and_missing_ids_are_filled():
+    raw = parse_completion(tool_completion([sdk_call(id=None, arguments={"email": "a@b.c"})]))
+    assert raw.tool_calls[0].id == "call_0"
+    assert json.loads(raw.tool_calls[0].arguments) == {"email": "a@b.c"}
+    assert raw.message["tool_calls"][0]["id"] == "call_0"  # echo and ToolCall agree
+
+
+def test_plain_answer_has_no_tool_calls_and_a_simple_echo_message():
+    raw = parse_completion(completion(content="hi"))
+    assert raw.tool_calls == ()
+    assert raw.message == {"role": "assistant", "content": "hi"}
+
+
+def test_tools_are_sent_only_when_given():
+    sent = []
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        return completion()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    transport = OpenAICompatTransport(client_factory=lambda s: client)
+    tools = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}]
+    transport(spec(), [], temperature=0.0, max_tokens=8, timeout=1)
+    transport(spec(), [], temperature=0.0, max_tokens=8, timeout=1, tools=tools)
+    assert "tools" not in sent[0] and "tool_choice" not in sent[1]
+    assert sent[1]["tools"] == tools

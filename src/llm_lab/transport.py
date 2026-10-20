@@ -9,6 +9,7 @@ touches this file alone.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from llm_lab.types import (
     ProviderError,
     ProviderUnavailable,
     RateLimited,
+    ToolCall,
 )
 
 
@@ -38,6 +40,8 @@ class RawCompletion:
     output_tokens: int | None
     reasoning_tokens: int | None
     finish_reason: str | None
+    tool_calls: tuple[ToolCall, ...] = ()
+    message: Message | None = None  # the assistant turn to send back next time
 
 
 class Transport(Protocol):
@@ -54,6 +58,7 @@ class Transport(Protocol):
         temperature: float,
         max_tokens: int,
         timeout: float,
+        tools: list[dict[str, Any]] | None = None,
     ) -> RawCompletion: ...
 
 
@@ -86,6 +91,7 @@ class OpenAICompatTransport:
         temperature: float,
         max_tokens: int,
         timeout: float,
+        tools: list[dict[str, Any]] | None = None,
     ) -> RawCompletion:
         client = self._client_for(spec)
         params: dict[str, Any] = dict(
@@ -99,6 +105,10 @@ class OpenAICompatTransport:
         )
         if spec.reasoning_effort is not None:
             params["reasoning_effort"] = spec.reasoning_effort
+        if tools:
+            # No tool_choice: the default ("auto") is the only value all three providers accept
+            # (Ollama doesn't support tool_choice at all).
+            params["tools"] = tools
         try:
             completion = client.chat.completions.create(**params)
         except openai.OpenAIError as e:
@@ -111,13 +121,64 @@ def parse_completion(completion: Any) -> RawCompletion:
     text = (choice.message.content or "") if choice is not None else ""
     usage = completion.usage
     details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
+
+    sdk_calls = (getattr(choice.message, "tool_calls", None) or []) if choice is not None else []
+    raw_calls = [_to_plain(c) for c in sdk_calls]
+    call_dicts = [_normalize_call(c, i) for i, c in enumerate(raw_calls)]
+    tool_calls = tuple(
+        ToolCall(id=c["id"], name=c["function"]["name"], arguments=c["function"]["arguments"])
+        for c in call_dicts
+    )
+
+    # The turn we'll send back next time. Message level: only the standard fields, because some
+    # providers reject fields they don't recognise in requests (e.g. a reasoning field another
+    # provider added). Tool-call level: everything the provider sent, because that's where
+    # provider-specific continuity data (such as Gemini's thinking signatures) lives.
+    message: Message = {"role": "assistant", "content": text}
+    if call_dicts:
+        message["tool_calls"] = call_dicts
+
     return RawCompletion(
         text=text,
         input_tokens=usage.prompt_tokens if usage is not None else None,
         output_tokens=usage.completion_tokens if usage is not None else None,
         reasoning_tokens=getattr(details, "reasoning_tokens", None),
         finish_reason=getattr(choice, "finish_reason", None),
+        tool_calls=tool_calls,
+        message=message,
     )
+
+
+def _to_plain(obj: Any) -> Any:
+    """SDK objects (pydantic models, or SimpleNamespace in tests) -> plain JSON-able data,
+    dropping None values. Extra fields the SDK doesn't know about are kept."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(exclude_none=True)
+    if isinstance(obj, dict):
+        return {k: _to_plain(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list | tuple):
+        return [_to_plain(v) for v in obj]
+    if hasattr(obj, "__dict__"):
+        return {k: _to_plain(v) for k, v in vars(obj).items() if v is not None}
+    return obj
+
+
+def _normalize_call(call: dict[str, Any], index: int) -> dict[str, Any]:
+    """Fill the gaps some providers leave, so every call has an id, a type and string arguments."""
+    function = dict(call.get("function") or {})
+    arguments = function.get("arguments")
+    if arguments is None:
+        arguments = "{}"
+    elif not isinstance(arguments, str):  # some servers send a parsed object instead of text
+        arguments = json.dumps(arguments)
+    function["arguments"] = arguments
+    function.setdefault("name", "")
+    return {
+        **call,
+        "id": call.get("id") or f"call_{index}",
+        "type": "function",
+        "function": function,
+    }
 
 
 def translate_error(

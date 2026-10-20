@@ -18,6 +18,7 @@ from llm_lab.types import (
     ProviderError,
     ProviderUnavailable,
     RateLimited,
+    ToolCall,
 )
 
 MSGS = [{"role": "user", "content": "Explain BM25 in two sentences."}]
@@ -37,9 +38,15 @@ class FakeTransport:
         self.script = list(script)
         self.calls = []
 
-    def __call__(self, spec, messages, *, temperature, max_tokens, timeout):
+    def __call__(self, spec, messages, *, temperature, max_tokens, timeout, tools=None):
         self.calls.append(
-            dict(alias=spec.alias, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
+            dict(
+                alias=spec.alias,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                tools=tools,
+            )
         )
         item = self.script.pop(0) if self.script else OK
         if isinstance(item, Exception):
@@ -134,7 +141,7 @@ def test_success_fills_every_field_and_prices_at_paid_rates():
     assert resp.attempts == 1 and resp.cached is False and resp.finish_reason == "stop"
     assert resp.latency_ms >= 0
     assert transport.calls == [
-        dict(alias="gemini-flash", temperature=0.0, max_tokens=256, timeout=5)
+        dict(alias="gemini-flash", temperature=0.0, max_tokens=256, timeout=5, tools=None)
     ]
 
 
@@ -356,3 +363,72 @@ def test_models_without_a_setting_use_the_client_default():
     with pytest.raises(ProviderError):
         client.chat("gemini-flash", MSGS)
     assert len(transport.calls) == 3
+
+
+# --- tool calling ---------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "find_customer",
+            "description": "Look up a customer by email.",
+            "parameters": {
+                "type": "object",
+                "properties": {"email": {"type": "string"}},
+                "required": ["email"],
+            },
+        },
+    }
+]
+CALL = ToolCall(id="call_1", name="find_customer", arguments='{"email": "jane@example.com"}')
+TOOL_TURN = RawCompletion(
+    text="",
+    input_tokens=120,
+    output_tokens=20,
+    reasoning_tokens=None,
+    finish_reason="tool_calls",
+    tool_calls=(CALL,),
+    message={
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "find_customer", "arguments": '{"email": "jane@example.com"}'},
+            }
+        ],
+    },
+)
+
+
+def test_tools_are_sent_and_tool_calls_come_back():
+    client, transport, _ = make_client(TOOL_TURN)
+    resp = client.chat("gemini-flash", MSGS, tools=TOOLS)
+    assert transport.calls[0]["tools"] == TOOLS
+    assert resp.tool_calls == (CALL,)
+    assert resp.finish_reason == "tool_calls"
+    assert resp.message["tool_calls"][0]["id"] == "call_1"  # ready to append to the history
+
+
+def test_tool_only_turn_is_cached_and_restored_with_tool_call_objects(tmp_path):
+    client, transport, _ = make_client(TOOL_TURN, cache=ResponseCache(tmp_path / "c.sqlite"))
+    client.chat("gemini-flash", MSGS, tools=TOOLS)
+    hit = client.chat("gemini-flash", MSGS, tools=TOOLS)
+    assert hit.cached is True and len(transport.calls) == 1
+    assert hit.tool_calls == (CALL,)  # ToolCall objects, not plain dicts
+    assert hit.message == TOOL_TURN.message
+
+
+def test_tools_are_part_of_the_cache_key(tmp_path):
+    client, transport, _ = make_client(OK, OK, cache=ResponseCache(tmp_path / "c.sqlite"))
+    client.chat("gemini-flash", MSGS)
+    resp = client.chat("gemini-flash", MSGS, tools=TOOLS)
+    assert resp.cached is False and len(transport.calls) == 2
+
+
+def test_tool_only_turn_is_not_reported_as_empty(caplog):
+    client, _, _ = make_client(TOOL_TURN)
+    client.chat("gemini-flash", MSGS, tools=TOOLS)
+    assert "empty answer" not in caplog.text

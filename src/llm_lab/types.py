@@ -8,10 +8,21 @@ attribute instead of matching exception types.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-# A chat message, e.g. {"role": "user", "content": "Hi"}. Kept as a plain dict so it
-# passes straight through to the OpenAI-compatible API without conversion.
-Message = dict[str, str]
+# A chat message, kept as a plain dict so it passes straight through to the OpenAI-compatible
+# API. Usually {"role": "user", "content": "Hi"}, but assistant turns can carry "tool_calls"
+# and tool results look like {"role": "tool", "tool_call_id": "...", "content": "..."}.
+Message = dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One tool the model asked us to run."""
+
+    id: str  # echoed back in the tool result so the model can match result to call
+    name: str
+    arguments: str  # raw JSON text from the model, deliberately unparsed: it may be invalid
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +41,17 @@ class LLMResponse:
     # Why generation stopped: "stop" = finished; "length" = hit max_tokens (answer is cut off,
     # common with thinking models whose reasoning uses up the budget); None = not reported.
     finish_reason: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()  # empty = the model answered instead of calling a tool
+    # The assistant turn to append to the conversation before the next call. Built by the
+    # transport from what the provider returned, so provider-specific data on tool calls
+    # (e.g. Gemini's thinking signatures) survives the round trip.
+    message: Message | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LLMResponse:
+        """Rebuild from dataclasses.asdict() output (the cache), restoring ToolCall objects."""
+        calls = tuple(ToolCall(**c) for c in data.get("tool_calls") or ())
+        return cls(**{**data, "tool_calls": calls})
 
 
 class LLMError(Exception):

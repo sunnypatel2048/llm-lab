@@ -19,6 +19,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from tenacity import (
@@ -105,7 +106,11 @@ class LLMClient:
         max_tokens: int = 2048,
         cache: CacheMode = "use",
         timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
+        """tools: OpenAI-format tool definitions. When the model wants to use one, the response
+        has tool_calls (and possibly no text); append resp.message, run the tools, append their
+        results as role="tool" messages, and call again."""
         if cache not in CACHE_MODES:
             raise ValueError(f"cache must be one of {CACHE_MODES}, got {cache!r}")
         spec = self.registry.get(alias)
@@ -113,11 +118,15 @@ class LLMClient:
 
         key = None
         if self._cache is not None:
-            # reasoning_effort changes the answer, so it's part of the key. Only added when set,
-            # so models without it keep the same keys as before.
-            extra = {"reasoning_effort": spec.reasoning_effort} if spec.reasoning_effort else None
+            # reasoning_effort and tools change the answer, so they're part of the key. Each is
+            # only added when set, so plain calls keep the same keys as before.
+            extra: dict[str, Any] = {}
+            if spec.reasoning_effort:
+                extra["reasoning_effort"] = spec.reasoning_effort
+            if tools:
+                extra["tools"] = tools
             key = cache_key(
-                spec, messages, temperature=temperature, max_tokens=max_tokens, extra=extra
+                spec, messages, temperature=temperature, max_tokens=max_tokens, extra=extra or None
             )
             hit = self._cache.get(key, cache)
             if hit is not None:
@@ -153,6 +162,7 @@ class LLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=call_timeout,
+                    tools=tools,
                 )
                 latency_ms = (time.perf_counter() - start) * 1000
 
@@ -169,12 +179,15 @@ class LLMClient:
             cached=False,
             attempts=attempts,
             finish_reason=raw.finish_reason,
+            tool_calls=raw.tool_calls,
+            message=raw.message,
         )
         if self._cache is not None and key is not None:
             self._cache.put(key, resp, cache)
 
         log.info(
-            "%s ok attempts=%d latency=%.0fms throttled=%.1fs in=%s out=%s cost=%s finish=%s",
+            "%s ok attempts=%d latency=%.0fms throttled=%.1fs in=%s out=%s cost=%s finish=%s"
+            " tool_calls=%d",
             alias,
             attempts,
             latency_ms,
@@ -183,8 +196,9 @@ class LLMClient:
             resp.output_tokens,
             f"${resp.cost_usd:.6f}" if resp.cost_usd is not None else "n/a",
             resp.finish_reason,
+            len(resp.tool_calls),
         )
-        if not resp.text.strip():
+        if not resp.text.strip() and not resp.tool_calls:
             log.warning(
                 "%s returned an empty answer (finish=%s); not cached", alias, resp.finish_reason
             )

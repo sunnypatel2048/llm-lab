@@ -103,7 +103,7 @@ class ResponseCache:
         if row is None:
             return None
         try:
-            stored = LLMResponse(**json.loads(row[0]))
+            stored = LLMResponse.from_dict(json.loads(row[0]))
         except (TypeError, ValueError) as e:
             # Written by an older/newer LLMResponse shape: treat as a miss rather than crash.
             log.debug("Ignoring unreadable cache entry %s: %s", key[:12], e)
@@ -114,10 +114,11 @@ class ResponseCache:
         """Store a response. Returns False if it was skipped (mode "off" or an empty answer).
 
         Empty answers usually mean the response was blocked or cut off; caching one would
-        hide that problem on every later run.
+        hide that problem on every later run. A turn that only calls tools has no text but
+        isn't empty, so it is cached.
         """
         _check_mode(mode)
-        if mode == "off" or not response.text.strip():
+        if mode == "off" or (not response.text.strip() and not response.tool_calls):
             return False
         record = dataclasses.asdict(dataclasses.replace(response, cached=False))
         with closing(self._connect()) as conn, conn:
